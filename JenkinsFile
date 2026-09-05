@@ -1,0 +1,66 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = 'whatismyip:v1'
+        CONTAINER_NAME = 'whatismyip-app'
+        HOST_PORT = '777'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/codesnippetsforall/Hello-world-what-is-my-ip-application.git'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo 'Building Docker image...'
+                sh '''
+                    ls -la
+                    docker build -t ${IMAGE_NAME} .
+                '''
+            }
+        }
+
+        stage('Test') {
+            steps {
+                echo 'Validating image exists...'
+                sh 'docker images | grep whatismyip || true'
+            }
+        }
+
+        stage('Code-Check') {
+            steps {
+                echo 'Checking required files...'
+                sh '''
+                    test -f Dockerfile
+                    test -f index.html
+                    echo "Dockerfile and index.html are present"
+                '''
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                echo 'Deploying container on port 666...'
+                sh '''
+                    docker rm -f ${CONTAINER_NAME} || true
+                    docker run -d --name ${CONTAINER_NAME} -p ${HOST_PORT}:80 --restart unless-stopped ${IMAGE_NAME}
+                    docker ps | grep ${CONTAINER_NAME}
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "App is live at: http://15.207.223.192:666/"
+        }
+        failure {
+            echo 'Pipeline failed. Check Docker is installed and Jenkins can run docker commands.'
+        }
+    }
+}
