@@ -4,7 +4,7 @@ pipeline {
     environment {
         IMAGE_NAME = 'whatismyip:v1'
         CONTAINER_NAME = 'whatismyip-app'
-        HOST_PORT = '777'
+        HOST_PORT = '888'
     }
 
     stages {
