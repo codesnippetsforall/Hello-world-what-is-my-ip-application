@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Your IP Address</title>
+  <title>Host Machine</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
@@ -15,7 +15,6 @@
       --text: #f4f7ff;
       --muted: #93a0bf;
       --accent: #6ee7ff;
-      --accent-2: #8b7cff;
       --ok: #4ade80;
       --danger: #fb7185;
     }
@@ -142,7 +141,7 @@
 
     .ip {
       font-family: "JetBrains Mono", ui-monospace, monospace;
-      font-size: clamp(22px, 5vw, 34px);
+      font-size: clamp(18px, 4vw, 28px);
       font-weight: 700;
       letter-spacing: 0.02em;
       background: linear-gradient(90deg, var(--accent), #c4b5fd);
@@ -204,7 +203,11 @@
       margin-bottom: 4px;
     }
 
-    .meta strong { font-size: 15px; font-weight: 600; }
+    .meta strong {
+      font-size: 15px;
+      font-weight: 600;
+      word-break: break-all;
+    }
 
     .foot {
       margin-top: 26px;
@@ -221,14 +224,14 @@
 <body>
   <div class="aurora"></div>
   <main class="card">
-    <div class="eyebrow"><span class="dot" id="statusDot"></span><span id="statusText">Detecting</span></div>
-    <h1>System IP</h1>
-    <p class="lede">A quick look at the address this browser is using on the internet.</p>
+    <div class="eyebrow"><span class="dot" id="statusDot"></span><span id="statusText">Online</span></div>
+    <h1>Host machine</h1>
+    <p class="lede">Hostname of the machine serving this page.</p>
 
     <div class="ip-box">
-      <div class="ip placeholder" id="ipValue">Looking up…</div>
+      <div class="ip placeholder" id="hostValue">Detecting…</div>
       <div class="actions">
-        <button type="button" id="copyBtn" title="Copy IP" aria-label="Copy IP">
+        <button type="button" id="copyBtn" title="Copy hostname" aria-label="Copy hostname">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="9" y="9" width="13" height="13" rx="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -245,77 +248,63 @@
 
     <section class="meta">
       <article>
-        <span>Location</span>
-        <strong id="location">—</strong>
+        <span>Full host</span>
+        <strong id="fullHost">—</strong>
       </article>
       <article>
-        <span>Network</span>
-        <strong id="network">—</strong>
+        <span>Protocol</span>
+        <strong id="protocol">—</strong>
       </article>
     </section>
 
-    <p class="foot" id="hint">IP is fetched from a public lookup service in your browser.</p>
+    <p class="foot" id="hint">Read from window.location in your browser.</p>
   </main>
 
   <script>
-    const ipValue = document.getElementById("ipValue");
-    const locationEl = document.getElementById("location");
-    const networkEl = document.getElementById("network");
+    const hostValue = document.getElementById("hostValue");
+    const fullHost = document.getElementById("fullHost");
+    const protocol = document.getElementById("protocol");
     const statusDot = document.getElementById("statusDot");
     const statusText = document.getElementById("statusText");
     const hint = document.getElementById("hint");
 
-    async function loadIp() {
-      ipValue.classList.add("placeholder");
-      ipValue.textContent = "Looking up…";
-      locationEl.textContent = "—";
-      networkEl.textContent = "—";
-      statusDot.classList.remove("error");
-      statusText.textContent = "Detecting";
+    function loadHostname() {
+      const hostname = window.location.hostname;
+      const hostWithPort = window.location.host;
 
-      try {
-        const response = await fetch("https://ipapi.co/json/");
-        if (!response.ok) throw new Error("Lookup failed");
-        const data = await response.json();
-        if (data.error || !data.ip) throw new Error(data.reason || "No IP returned");
-
-        ipValue.classList.remove("placeholder");
-        ipValue.textContent = data.ip;
-        locationEl.textContent = [data.city, data.region, data.country_name].filter(Boolean).join(", ") || "Unknown";
-        networkEl.textContent = data.org || data.asn || "Unknown";
-        statusText.textContent = "Online";
-        hint.textContent = "IP is fetched from a public lookup service in your browser.";
-      } catch (error) {
-        try {
-          const fallback = await fetch("https://api.ipify.org?format=json");
-          const data = await fallback.json();
-          ipValue.classList.remove("placeholder");
-          ipValue.textContent = data.ip;
-          locationEl.textContent = "Unavailable";
-          networkEl.textContent = "Unavailable";
-          statusText.textContent = "Online";
-        } catch {
-          ipValue.textContent = "Unable to detect";
-          statusDot.classList.add("error");
-          statusText.textContent = "Unavailable";
-          hint.textContent = "Could not reach the IP lookup service. Check your network and try again.";
-        }
+      if (!hostname) {
+        hostValue.classList.add("placeholder");
+        hostValue.textContent = "Unavailable";
+        statusDot.classList.add("error");
+        statusText.textContent = "Unavailable";
+        fullHost.textContent = "—";
+        protocol.textContent = "—";
+        hint.textContent = "Could not read hostname from the browser location.";
+        return;
       }
+
+      hostValue.classList.remove("placeholder");
+      hostValue.textContent = hostname;
+      fullHost.textContent = hostWithPort;
+      protocol.textContent = window.location.protocol.replace(":", "").toUpperCase();
+      statusDot.classList.remove("error");
+      statusText.textContent = "Online";
+      hint.textContent = "Hostname is taken from the URL used to open this page.";
     }
 
-    document.getElementById("refreshBtn").addEventListener("click", loadIp);
+    document.getElementById("refreshBtn").addEventListener("click", loadHostname);
     document.getElementById("copyBtn").addEventListener("click", async () => {
-      const ip = ipValue.textContent;
-      if (!ip || ipValue.classList.contains("placeholder")) return;
+      const value = hostValue.textContent;
+      if (!value || hostValue.classList.contains("placeholder")) return;
       try {
-        await navigator.clipboard.writeText(ip);
+        await navigator.clipboard.writeText(value);
         hint.textContent = "Copied to clipboard.";
       } catch {
-        hint.textContent = "Copy failed. Select the IP and copy it manually.";
+        hint.textContent = "Copy failed. Select the hostname and copy it manually.";
       }
     });
 
-    loadIp();
+    loadHostname();
   </script>
 </body>
 </html>
