@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Your IP Address</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #070b14;
+      --card: rgba(18, 24, 40, 0.72);
+      --line: rgba(255, 255, 255, 0.08);
+      --text: #f4f7ff;
+      --muted: #93a0bf;
+      --accent: #6ee7ff;
+      --accent-2: #8b7cff;
+      --ok: #4ade80;
+      --danger: #fb7185;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      font-family: "DM Sans", system-ui, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      overflow: hidden;
+    }
+
+    .aurora,
+    .aurora::before,
+    .aurora::after {
+      position: fixed;
+      inset: auto;
+      width: 42vw;
+      height: 42vw;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.55;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .aurora {
+      top: -12vw;
+      left: -8vw;
+      background: radial-gradient(circle, #2563eb 0%, transparent 70%);
+    }
+
+    .aurora::before {
+      content: "";
+      top: 48vh;
+      right: -10vw;
+      left: auto;
+      background: radial-gradient(circle, #7c3aed 0%, transparent 70%);
+    }
+
+    .aurora::after {
+      content: "";
+      bottom: -16vw;
+      left: 28vw;
+      background: radial-gradient(circle, #06b6d4 0%, transparent 70%);
+    }
+
+    .card {
+      position: relative;
+      z-index: 1;
+      width: min(560px, 100%);
+      padding: 40px 36px 32px;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: var(--card);
+      backdrop-filter: blur(22px);
+      box-shadow:
+        0 30px 80px rgba(0, 0, 0, 0.45),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      animation: rise 0.7s ease both;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(18px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 18px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(110, 231, 255, 0.1);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7);
+      animation: pulse 1.8s infinite;
+    }
+
+    .dot.error { background: var(--danger); animation: none; }
+
+    @keyframes pulse {
+      70% { box-shadow: 0 0 0 10px rgba(74, 222, 128, 0); }
+    }
+
+    h1 {
+      font-size: clamp(28px, 5vw, 38px);
+      line-height: 1.15;
+      margin-bottom: 8px;
+    }
+
+    .lede {
+      color: var(--muted);
+      margin-bottom: 28px;
+    }
+
+    .ip-box {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 22px 20px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+      border: 1px solid var(--line);
+    }
+
+    .ip {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: clamp(22px, 5vw, 34px);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      background: linear-gradient(90deg, var(--accent), #c4b5fd);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      word-break: break-all;
+    }
+
+    .ip.placeholder {
+      color: var(--muted);
+      background: none;
+      -webkit-text-fill-color: var(--muted);
+      font-size: 18px;
+      font-weight: 500;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      border-radius: 12px;
+      width: 42px;
+      height: 42px;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+
+    button:hover { background: rgba(255, 255, 255, 0.1); transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+
+    .meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .meta article {
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .meta span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+
+    .meta strong { font-size: 15px; font-weight: 600; }
+
+    .foot {
+      margin-top: 26px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 520px) {
+      .card { padding: 28px 20px; }
+      .meta { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="aurora"></div>
+  <main class="card">
+    <div class="eyebrow"><span class="dot" id="statusDot"></span><span id="statusText">Detecting</span></div>
+    <h1>Your public IP</h1>
+    <p class="lede">A quick look at the address this browser is using on the internet.</p>
+
+    <div class="ip-box">
+      <div class="ip placeholder" id="ipValue">Looking up…</div>
+      <div class="actions">
+        <button type="button" id="copyBtn" title="Copy IP" aria-label="Copy IP">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+        <button type="button" id="refreshBtn" title="Refresh" aria-label="Refresh">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 1 1-2.1-5.7"></path>
+            <path d="M21 3v6h-6"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <section class="meta">
+      <article>
+        <span>Location</span>
+        <strong id="location">—</strong>
+      </article>
+      <article>
+        <span>Network</span>
+        <strong id="network">—</strong>
+      </article>
+    </section>
+
+    <p class="foot" id="hint">IP is fetched from a public lookup service in your browser.</p>
+  </main>
+
+  <script>
+    const ipValue = document.getElementById("ipValue");
+    const locationEl = document.getElementById("location");
+    const networkEl = document.getElementById("network");
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const hint = document.getElementById("hint");
+
+    async function loadIp() {
+      ipValue.classList.add("placeholder");
+      ipValue.textContent = "Looking up…";
+      locationEl.textContent = "—";
+      networkEl.textContent = "—";
+      statusDot.classList.remove("error");
+      statusText.textContent = "Detecting";
+
+      try {
+        const response = await fetch("https://ipapi.co/json/");
+        if (!response.ok) throw new Error("Lookup failed");
+        const data = await response.json();
+        if (data.error || !data.ip) throw new Error(data.reason || "No IP returned");
+
+        ipValue.classList.remove("placeholder");
+        ipValue.textContent = data.ip;
+        locationEl.textContent = [data.city, data.region, data.country_name].filter(Boolean).join(", ") || "Unknown";
+        networkEl.textContent = data.org || data.asn || "Unknown";
+        statusText.textContent = "Online";
+        hint.textContent = "IP is fetched from a public lookup service in your browser.";
+      } catch (error) {
+        try {
+          const fallback = await fetch("https://api.ipify.org?format=json");
+          const data = await fallback.json();
+          ipValue.classList.remove("placeholder");
+          ipValue.textContent = data.ip;
+          locationEl.textContent = "Unavailable";
+          networkEl.textContent = "Unavailable";
+          statusText.textContent = "Online";
+        } catch {
+          ipValue.textContent = "Unable to detect";
+          statusDot.classList.add("error");
+          statusText.textContent = "Unavailable";
+          hint.textContent = "Could not reach the IP lookup service. Check your network and try again.";
+        }
+      }
+    }
+
+    document.getElementById("refreshBtn").addEventListener("click", loadIp);
+    document.getElementById("copyBtn").addEventListener("click", async () => {
+      const ip = ipValue.textContent;
+      if (!ip || ipValue.classList.contains("placeholder")) return;
+      try {
+        await navigator.clipboard.writeText(ip);
+        hint.textContent = "Copied to clipboard.";
+      } catch {
+        hint.textContent = "Copy failed. Select the IP and copy it manually.";
+      }
+    });
+
+    loadIp();
+  </script>
+</body>
+</html>
