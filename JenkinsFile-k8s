@@ -1,0 +1,88 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME   = 'dockermano1984/myhostip:v1'
+        APP_NAME     = 'myhostip'
+        KUBECONFIG   = '/var/lib/jenkins/.kube/config'
+        EC2_PUBLIC_IP = '15.207.223.192'
+        NODE_PORT    = '30080'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/codesnippetsforall/Hello-world-what-is-my-ip-application.git'
+            }
+        }
+
+        stage('Verify cluster') {
+            steps {
+                echo 'Checking Kubernetes cluster on this EC2 node...'
+                sh '''
+                    set -e
+                    if ! command -v kubectl >/dev/null 2>&1; then
+                      echo "kubectl not found. Install k3s (or another cluster) on this EC2 first."
+                      exit 1
+                    fi
+                    kubectl cluster-info
+                    kubectl get nodes -o wide
+                '''
+            }
+        }
+
+        stage('Pull image') {
+            steps {
+                echo "Pulling ${IMAGE_NAME} from Docker Hub..."
+                sh '''
+                    set -e
+                    docker pull ${IMAGE_NAME}
+                    docker images | grep myhostip || true
+                '''
+            }
+        }
+
+        stage('Deploy app (2 replicas)') {
+            steps {
+                echo 'Applying Deployment + Service + Ingress...'
+                sh '''
+                    set -e
+                    kubectl apply -f k8s/deployment.yaml
+                    kubectl apply -f k8s/service.yaml
+                    kubectl apply -f k8s/ingress.yaml || true
+                    kubectl rollout status deployment/${APP_NAME} --timeout=180s
+                '''
+            }
+        }
+
+        stage('Verify pods & endpoints') {
+            steps {
+                sh '''
+                    set -e
+                    echo "=== Pods ==="
+                    kubectl get pods -l app=${APP_NAME} -o wide
+                    echo "=== Services ==="
+                    kubectl get svc -l app=${APP_NAME} -o wide
+                    echo "=== Ingress ==="
+                    kubectl get ingress myhostip-ingress -o wide || true
+                    POD_COUNT=$(kubectl get pods -l app=${APP_NAME} --field-selector=status.phase=Running --no-headers | wc -l)
+                    echo "Running pods: ${POD_COUNT}"
+                    test "${POD_COUNT}" -ge 2
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Cluster: 1 node (this Jenkins EC2)"
+            echo "Workload: 1 Deployment, 2 replicas (2 pods) using ${IMAGE_NAME}"
+            echo "LoadBalancer / NodePort URL: http://${EC2_PUBLIC_IP}:${NODE_PORT}/"
+            echo "If Ingress controller is installed: http://${EC2_PUBLIC_IP}/"
+        }
+        failure {
+            echo 'Failed. Ensure k3s/kubectl is installed, jenkins can use kubeconfig, and Docker Hub image exists.'
+        }
+    }
+}

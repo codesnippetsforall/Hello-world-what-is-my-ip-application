@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: myhostip-svc
+  namespace: default
+  labels:
+    app: myhostip
+spec:
+  type: LoadBalancer
+  selector:
+    app: myhostip
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30080
+---
+# ClusterIP used by Ingress (same pods)
+apiVersion: v1
+kind: Service
+metadata:
+  name: myhostip-clusterip
+  namespace: default
+  labels:
+    app: myhostip
+spec:
+  type: ClusterIP
+  selector:
+    app: myhostip
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myhostip-ingress
+  namespace: default
+spec:
+  # k3s default: traefik | use "nginx" if you installed nginx ingress instead
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: myhostip-clusterip
+                port:
+                  number: 80

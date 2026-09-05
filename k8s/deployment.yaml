@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myhostip
+  namespace: default
+  labels:
+    app: myhostip
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myhostip
+  template:
+    metadata:
+      labels:
+        app: myhostip
+    spec:
+      containers:
+        - name: myhostip
+          image: dockermano1984/myhostip:v1
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
