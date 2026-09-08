@@ -57,7 +57,7 @@ pipeline {
 
     post {
         success {
-            echo "App is live at: http://15.207.223.192:666/"
+            echo "App is live at: http://43.204.100.183:888/"
         }
         failure {
             echo 'Pipeline failed. Check Docker is installed and Jenkins can run docker commands.'
