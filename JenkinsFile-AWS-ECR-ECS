@@ -8,17 +8,24 @@ pipeline {
         CONTAINER_NAME     = 'whatismyip'
         CONTAINER_PORT     = '80'
 
-        // --- AWS (edit names/region to match your account; no secrets here) ---
+        // --- AWS resource names (no secrets here) ---
         AWS_DEFAULT_REGION = 'ap-south-1'
         ECR_REPO_NAME      = 'whatismyip'
         ECS_CLUSTER        = 'whatismyip-cluster'
         ECS_SERVICE        = 'whatismyip-service'
         ECS_TASK_FAMILY    = 'whatismyip-task'
 
+        // --- Jenkins Credentials (Secret text) — DO NOT hardcode keys ---
+        // Create these in Jenkins: Manage Jenkins → Credentials
+        //   ID: aws-access-key-id     → IAM Access Key ID
+        //   ID: aws-secret-access-key → IAM Secret Access Key
+        AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
+        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
+
         // Filled dynamically in "Resolve AWS identity"
-        AWS_ACCOUNT_ID     = '656559337356'
-        ECR_REGISTRY       = '656559337356.dkr.ecr.ap-south-1.amazonaws.com'
-        IMAGE_URI          = '656559337356.dkr.ecr.ap-south-1.amazonaws.com/whatismyip:v1-${BUILD_NUMBER}'
+        AWS_ACCOUNT_ID     = ''
+        ECR_REGISTRY       = ''
+        IMAGE_URI          = ''
     }
 
     stages {
@@ -42,14 +49,17 @@ pipeline {
 
         stage('Resolve AWS identity') {
             steps {
-                echo 'Resolving AWS account and ECR registry (dynamic, not hardcoded)...'
+                echo 'Logging in via Jenkins credentials (IAM user keys)...'
                 sh '''
                     set -e
                     command -v aws >/dev/null
                     command -v docker >/dev/null
 
+                    # Keys come from Jenkins Credentials → env AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
                     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+                    CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
                     echo "AWS Account: ${ACCOUNT_ID}"
+                    echo "Caller ARN:  ${CALLER_ARN}"
                     echo "AWS Region:  ${AWS_DEFAULT_REGION}"
 
                     echo "${ACCOUNT_ID}" > .aws_account_id
@@ -273,7 +283,7 @@ PY
             '''
         }
         failure {
-            echo 'Pipeline failed. Check AWS CLI/IAM permissions, ECR push, and that ECS cluster/service already exist.'
+            echo 'Pipeline failed. Check Jenkins AWS credentials IDs, IAM permissions, ECR push, and ECS cluster/service.'
         }
         always {
             sh 'docker logout "${ECR_REGISTRY}" >/dev/null 2>&1 || true'
