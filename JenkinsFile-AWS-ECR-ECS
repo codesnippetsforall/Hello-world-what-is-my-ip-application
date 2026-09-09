@@ -7,6 +7,7 @@ pipeline {
         IMAGE_TAG          = "v1-${BUILD_NUMBER}"
         CONTAINER_NAME     = 'whatismyip'
         CONTAINER_PORT     = '80'
+        DESIRED_COUNT      = '1'
 
         // --- AWS resource names (no secrets here) ---
         AWS_DEFAULT_REGION = 'ap-south-1'
@@ -14,10 +15,16 @@ pipeline {
         ECS_CLUSTER        = 'whatismyip-cluster'
         ECS_SERVICE        = 'whatismyip-service'
         ECS_TASK_FAMILY    = 'whatismyip-task'
+        EXEC_ROLE_NAME     = 'ecsTaskExecutionRole'
+        ECS_SG_NAME        = 'whatismyip-ecs-sg'
 
-        // --- Jenkins Credentials (Secret text) — DO NOT hardcode keys ---
-        //   ID: aws-access-key-id     → IAM Access Key ID
-        //   ID: aws-secret-access-key → IAM Secret Access Key
+        // Optional overrides (leave empty to auto-discover default VPC)
+        // Example: SUBNET_IDS = 'subnet-aaa,subnet-bbb'
+        // Example: SECURITY_GROUP_ID = 'sg-xxxx'
+        SUBNET_IDS         = ''
+        SECURITY_GROUP_ID  = ''
+
+        // --- Jenkins Credentials (Secret text) ---
         AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
         AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
     }
@@ -59,7 +66,6 @@ pipeline {
                     echo "AWS Region:  ${AWS_DEFAULT_REGION}"
                     echo "ECR image URI: ${IMAGE_URI}"
 
-                    # Persist for later stages (reliable across stages)
                     echo "${ACCOUNT_ID}"   > .aws_account_id
                     echo "${ECR_REGISTRY}" > .ecr_registry
                     echo "${IMAGE_URI}"    > .image_uri
@@ -122,31 +128,103 @@ pipeline {
             }
         }
 
-        stage('Register ECS task definition') {
+        stage('Ensure IAM execution role') {
             steps {
-                echo 'Registering new ECS task definition revision with ECR image...'
+                echo "Ensuring IAM role ${EXEC_ROLE_NAME} exists..."
                 sh '''
                     set -e
                     AWS_ACCOUNT_ID=$(cat .aws_account_id)
+                    ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${EXEC_ROLE_NAME}"
+
+                    if aws iam get-role --role-name "${EXEC_ROLE_NAME}" >/dev/null 2>&1; then
+                      echo "IAM role already exists: ${ROLE_ARN}"
+                    else
+                      echo "Creating IAM role: ${EXEC_ROLE_NAME}"
+                      cat > /tmp/ecs-trust-policy.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "ecs-tasks.amazonaws.com" },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+                      aws iam create-role \
+                        --role-name "${EXEC_ROLE_NAME}" \
+                        --assume-role-policy-document file:///tmp/ecs-trust-policy.json
+
+                      aws iam attach-role-policy \
+                        --role-name "${EXEC_ROLE_NAME}" \
+                        --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+                      # Allow CloudWatch log group create used by awslogs-create-group
+                      aws iam attach-role-policy \
+                        --role-name "${EXEC_ROLE_NAME}" \
+                        --policy-arn arn:aws:iam::aws:policy/CloudWatchLogsFullAccess || true
+
+                      echo "Waiting for IAM role to propagate..."
+                      sleep 15
+                    fi
+
+                    echo "${ROLE_ARN}" > .exec_role_arn
+                '''
+            }
+        }
+
+        stage('Ensure ECS cluster') {
+            steps {
+                echo "Ensuring ECS cluster ${ECS_CLUSTER} exists..."
+                sh '''
+                    set -e
+                    CLUSTER_STATUS=$(aws ecs describe-clusters \
+                      --clusters "${ECS_CLUSTER}" \
+                      --query 'clusters[0].status' \
+                      --output text 2>/dev/null || echo "MISSING")
+
+                    if [ "${CLUSTER_STATUS}" = "ACTIVE" ]; then
+                      echo "ECS cluster already ACTIVE: ${ECS_CLUSTER}"
+                    else
+                      echo "Creating ECS cluster: ${ECS_CLUSTER}"
+                      aws ecs create-cluster \
+                        --cluster-name "${ECS_CLUSTER}" \
+                        --capacity-providers FARGATE FARGATE_SPOT \
+                        --default-capacity-provider-strategy capacityProvider=FARGATE,weight=1
+                      echo "Created cluster ${ECS_CLUSTER}"
+                    fi
+                '''
+            }
+        }
+
+        stage('Register ECS task definition') {
+            steps {
+                echo 'Registering/updating ECS task definition with latest ECR image...'
+                sh '''
+                    set -e
                     IMAGE_URI=$(cat .image_uri)
+                    EXEC_ROLE=$(cat .exec_role_arn)
 
                     EXISTING=$(aws ecs describe-task-definition \
                       --task-definition "${ECS_TASK_FAMILY}" \
                       --query 'taskDefinition' \
                       --output json 2>/dev/null || true)
 
+                    TASK_ROLE=""
+                    CPU="256"
+                    MEMORY="512"
+                    NETWORK_MODE="awsvpc"
+
                     if [ -n "${EXISTING}" ] && [ "${EXISTING}" != "null" ]; then
-                      EXEC_ROLE=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('executionRoleArn') or '')")
                       TASK_ROLE=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('taskRoleArn') or '')")
                       CPU=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cpu') or '256')")
                       MEMORY=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('memory') or '512')")
                       NETWORK_MODE=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('networkMode') or 'awsvpc')")
-                    else
-                      EXEC_ROLE="arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole"
-                      TASK_ROLE=""
-                      CPU="256"
-                      MEMORY="512"
-                      NETWORK_MODE="awsvpc"
+                      EXISTING_EXEC=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('executionRoleArn') or '')")
+                      if [ -n "${EXISTING_EXEC}" ]; then
+                        EXEC_ROLE="${EXISTING_EXEC}"
+                      fi
                     fi
 
                     export ECS_TASK_FAMILY IMAGE_URI CONTAINER_NAME CONTAINER_PORT
@@ -170,6 +248,7 @@ td = {
             "portMappings": [
                 {
                     "containerPort": int(os.environ["CONTAINER_PORT"]),
+                    "hostPort": int(os.environ["CONTAINER_PORT"]),
                     "protocol": "tcp",
                 }
             ],
@@ -196,29 +275,110 @@ with open("task-definition.json", "w") as f:
 print("Wrote task-definition.json")
 PY
 
-                    aws ecs register-task-definition --cli-input-json file://task-definition.json
-                    echo "Registered task definition family: ${ECS_TASK_FAMILY}"
+                    REG_OUT=$(aws ecs register-task-definition --cli-input-json file://task-definition.json)
+                    TASK_DEF_ARN=$(printf '%s' "${REG_OUT}" | python3 -c "import sys,json; print(json.load(sys.stdin)['taskDefinition']['taskDefinitionArn'])")
+                    echo "${TASK_DEF_ARN}" > .task_def_arn
+                    echo "Registered task definition: ${TASK_DEF_ARN}"
                     echo "Image: ${IMAGE_URI}"
                 '''
             }
         }
 
-        stage('Deploy to ECS') {
+        stage('Ensure network (VPC/SG/subnets)') {
             steps {
-                echo "Updating ECS service ${ECS_SERVICE} on cluster ${ECS_CLUSTER}..."
+                echo 'Resolving subnets and security group for Fargate service...'
                 sh '''
                     set -e
 
-                    CLUSTER_STATUS=$(aws ecs describe-clusters \
-                      --clusters "${ECS_CLUSTER}" \
-                      --query 'clusters[0].status' \
-                      --output text 2>/dev/null || echo "MISSING")
+                    if [ -n "${SUBNET_IDS}" ] && [ -n "${SECURITY_GROUP_ID}" ]; then
+                      echo "Using provided SUBNET_IDS and SECURITY_GROUP_ID"
+                      echo "${SUBNET_IDS}" > .subnet_ids
+                      echo "${SECURITY_GROUP_ID}" > .security_group_id
+                      exit 0
+                    fi
 
-                    if [ "${CLUSTER_STATUS}" != "ACTIVE" ]; then
-                      echo "ECS cluster '${ECS_CLUSTER}' is not ACTIVE (status=${CLUSTER_STATUS})."
-                      echo "Create the Fargate cluster once in AWS Console, then re-run this job."
+                    VPC_ID=$(aws ec2 describe-vpcs \
+                      --filters Name=isDefault,Values=true \
+                      --query 'Vpcs[0].VpcId' \
+                      --output text)
+
+                    if [ -z "${VPC_ID}" ] || [ "${VPC_ID}" = "None" ]; then
+                      VPC_ID=$(aws ec2 describe-vpcs --query 'Vpcs[0].VpcId' --output text)
+                    fi
+
+                    if [ -z "${VPC_ID}" ] || [ "${VPC_ID}" = "None" ]; then
+                      echo "No VPC found in region ${AWS_DEFAULT_REGION}"
                       exit 1
                     fi
+                    echo "Using VPC: ${VPC_ID}"
+
+                    # Prefer subnets that auto-assign public IPs
+                    SUBNET_LIST=$(aws ec2 describe-subnets \
+                      --filters Name=vpc-id,Values="${VPC_ID}" Name=map-public-ip-on-launch,Values=true \
+                      --query 'Subnets[].SubnetId' \
+                      --output text)
+
+                    if [ -z "${SUBNET_LIST}" ]; then
+                      SUBNET_LIST=$(aws ec2 describe-subnets \
+                        --filters Name=vpc-id,Values="${VPC_ID}" \
+                        --query 'Subnets[].SubnetId' \
+                        --output text)
+                    fi
+
+                    # Take up to 2 subnets, comma-separated
+                    SUBNET_IDS=$(echo "${SUBNET_LIST}" | tr '\t' '\n' | awk 'NF' | head -n 2 | paste -sd, -)
+                    if [ -z "${SUBNET_IDS}" ]; then
+                      echo "No subnets found in VPC ${VPC_ID}"
+                      exit 1
+                    fi
+                    echo "Using subnets: ${SUBNET_IDS}"
+
+                    SG_ID=$(aws ec2 describe-security-groups \
+                      --filters Name=vpc-id,Values="${VPC_ID}" Name=group-name,Values="${ECS_SG_NAME}" \
+                      --query 'SecurityGroups[0].GroupId' \
+                      --output text 2>/dev/null || echo "None")
+
+                    if [ -z "${SG_ID}" ] || [ "${SG_ID}" = "None" ]; then
+                      echo "Creating security group ${ECS_SG_NAME}..."
+                      SG_ID=$(aws ec2 create-security-group \
+                        --group-name "${ECS_SG_NAME}" \
+                        --description "Allow HTTP to whatismyip ECS tasks" \
+                        --vpc-id "${VPC_ID}" \
+                        --query 'GroupId' \
+                        --output text)
+
+                      aws ec2 authorize-security-group-ingress \
+                        --group-id "${SG_ID}" \
+                        --protocol tcp \
+                        --port "${CONTAINER_PORT}" \
+                        --cidr 0.0.0.0/0
+                    else
+                      echo "Security group already exists: ${SG_ID}"
+                    fi
+
+                    echo "${SUBNET_IDS}" > .subnet_ids
+                    echo "${SG_ID}" > .security_group_id
+                    echo "SG: ${SG_ID}"
+                '''
+            }
+        }
+
+        stage('Ensure / update ECS service') {
+            steps {
+                echo "Creating ECS service if missing, otherwise updating..."
+                sh '''
+                    set -e
+                    TASK_DEF_ARN=$(cat .task_def_arn)
+                    SUBNET_IDS=$(cat .subnet_ids)
+                    SG_ID=$(cat .security_group_id)
+
+                    # Convert subnet-aaa,subnet-bbb -> "subnet-aaa","subnet-bbb"
+                    SUBNET_JSON=$(echo "${SUBNET_IDS}" | awk -F, '{
+                      for (i=1; i<=NF; i++) {
+                        gsub(/^[ \t]+|[ \t]+$/, "", $i);
+                        printf "\"%s\"%s", $i, (i<NF?",":"")
+                      }
+                    }')
 
                     SERVICE_STATUS=$(aws ecs describe-services \
                       --cluster "${ECS_CLUSTER}" \
@@ -226,19 +386,29 @@ PY
                       --query 'services[0].status' \
                       --output text 2>/dev/null || echo "MISSING")
 
-                    if [ "${SERVICE_STATUS}" != "ACTIVE" ]; then
-                      echo "ECS service '${ECS_SERVICE}' is not ACTIVE (status=${SERVICE_STATUS})."
-                      echo "Create the service once (subnets, security group, optional ALB), then re-run."
-                      exit 1
+                    if [ "${SERVICE_STATUS}" = "ACTIVE" ]; then
+                      echo "Service exists — updating to new task definition..."
+                      aws ecs update-service \
+                        --cluster "${ECS_CLUSTER}" \
+                        --service "${ECS_SERVICE}" \
+                        --task-definition "${TASK_DEF_ARN}" \
+                        --desired-count "${DESIRED_COUNT}" \
+                        --force-new-deployment \
+                        --network-configuration "awsvpcConfiguration={subnets=[${SUBNET_JSON}],securityGroups=[\"${SG_ID}\"],assignPublicIp=ENABLED}"
+                    else
+                      echo "Creating ECS service ${ECS_SERVICE}..."
+                      aws ecs create-service \
+                        --cluster "${ECS_CLUSTER}" \
+                        --service-name "${ECS_SERVICE}" \
+                        --task-definition "${TASK_DEF_ARN}" \
+                        --desired-count "${DESIRED_COUNT}" \
+                        --launch-type FARGATE \
+                        --platform-version LATEST \
+                        --scheduling-strategy REPLICA \
+                        --network-configuration "awsvpcConfiguration={subnets=[${SUBNET_JSON}],securityGroups=[\"${SG_ID}\"],assignPublicIp=ENABLED}"
                     fi
 
-                    aws ecs update-service \
-                      --cluster "${ECS_CLUSTER}" \
-                      --service "${ECS_SERVICE}" \
-                      --task-definition "${ECS_TASK_FAMILY}" \
-                      --force-new-deployment
-
-                    echo "Waiting for service stability..."
+                    echo "Waiting for service stability (may take a few minutes)..."
                     aws ecs wait services-stable \
                       --cluster "${ECS_CLUSTER}" \
                       --services "${ECS_SERVICE}"
@@ -263,6 +433,7 @@ PY
                 echo "Cluster: ${ECS_CLUSTER}"
                 echo "Service: ${ECS_SERVICE}"
 
+                # Prefer ALB DNS if attached
                 TG_ARN=$(aws ecs describe-services \
                   --cluster "${ECS_CLUSTER}" \
                   --services "${ECS_SERVICE}" \
@@ -284,11 +455,36 @@ PY
                   fi
                 fi
 
-                echo "No ALB DNS found. Check ECS tasks (public IP) or attach an Application Load Balancer."
+                # Fallback: public IP of a running task ENI
+                TASK_ARN=$(aws ecs list-tasks \
+                  --cluster "${ECS_CLUSTER}" \
+                  --service-name "${ECS_SERVICE}" \
+                  --desired-status RUNNING \
+                  --query 'taskArns[0]' \
+                  --output text 2>/dev/null)
+
+                if [ -n "${TASK_ARN}" ] && [ "${TASK_ARN}" != "None" ]; then
+                  ENI=$(aws ecs describe-tasks \
+                    --cluster "${ECS_CLUSTER}" \
+                    --tasks "${TASK_ARN}" \
+                    --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value | [0]' \
+                    --output text 2>/dev/null)
+                  PUB_IP=$(aws ec2 describe-network-interfaces \
+                    --network-interface-ids "${ENI}" \
+                    --query 'NetworkInterfaces[0].Association.PublicIp' \
+                    --output text 2>/dev/null)
+                  if [ -n "${PUB_IP}" ] && [ "${PUB_IP}" != "None" ]; then
+                    echo "App URL: http://${PUB_IP}:${CONTAINER_PORT}/"
+                    exit 0
+                  fi
+                fi
+
+                echo "Deployed, but could not resolve a public URL automatically."
+                echo "Check ECS → Clusters → ${ECS_CLUSTER} → Tasks for the task public IP."
             '''
         }
         failure {
-            echo 'Pipeline failed. Check Jenkins AWS credentials IDs, IAM permissions, ECR push, and ECS cluster/service.'
+            echo 'Pipeline failed. Ensure IAM user can manage ECR/ECS/EC2/IAM (create role, SG, cluster, service).'
         }
         always {
             sh '''
