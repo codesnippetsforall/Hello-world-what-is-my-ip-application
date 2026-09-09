@@ -372,13 +372,10 @@ PY
                     SUBNET_IDS=$(cat .subnet_ids)
                     SG_ID=$(cat .security_group_id)
 
-                    # Convert subnet-aaa,subnet-bbb -> "subnet-aaa","subnet-bbb"
-                    SUBNET_JSON=$(echo "${SUBNET_IDS}" | awk -F, '{
-                      for (i=1; i<=NF; i++) {
-                        gsub(/^[ \t]+|[ \t]+$/, "", $i);
-                        printf "\"%s\"%s", $i, (i<NF?",":"")
-                      }
-                    }')
+                    # subnet-aaa,subnet-bbb -> "subnet-aaa","subnet-bbb"
+                    SUBNET_JSON=$(echo "${SUBNET_IDS}" | tr -d '[:space:]' | sed 's/^/"/;s/$/"/;s/,/","/g')
+                    echo "SUBNET_JSON=${SUBNET_JSON}"
+                    echo "SG_ID=${SG_ID}"
 
                     SERVICE_STATUS=$(aws ecs describe-services \
                       --cluster "${ECS_CLUSTER}" \
