@@ -21,7 +21,7 @@ pipeline {
                 sh '''
                     test -f Dockerfile
                     test -f index.html
-                    echo "Dockerfile and index.html are present"
+                    echo "Dockerfile and index.html are present "
                 '''
             }
         }
