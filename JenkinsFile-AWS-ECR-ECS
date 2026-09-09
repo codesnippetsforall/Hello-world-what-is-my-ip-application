@@ -8,6 +8,10 @@ pipeline {
         CONTAINER_NAME     = 'whatismyip'
         CONTAINER_PORT     = '80'
         DESIRED_COUNT      = '1'
+        // false = Jenkins finishes after update-service (~few seconds). true = wait until tasks stable (1-5+ min).
+        WAIT_FOR_STABLE    = 'false'
+        // Max seconds to wait only when WAIT_FOR_STABLE=true
+        STABLE_WAIT_SECONDS = '90'
 
         // --- AWS resource names (no secrets here) ---
         AWS_DEFAULT_REGION = 'ap-south-1'
@@ -390,6 +394,7 @@ PY
                         --service "${ECS_SERVICE}" \
                         --task-definition "${TASK_DEF_ARN}" \
                         --desired-count "${DESIRED_COUNT}" \
+                        --deployment-configuration "maximumPercent=200,minimumHealthyPercent=0" \
                         --force-new-deployment \
                         --network-configuration "awsvpcConfiguration={subnets=[${SUBNET_JSON}],securityGroups=[\"${SG_ID}\"],assignPublicIp=ENABLED}"
                     else
@@ -402,19 +407,45 @@ PY
                         --launch-type FARGATE \
                         --platform-version LATEST \
                         --scheduling-strategy REPLICA \
+                        --deployment-configuration "maximumPercent=200,minimumHealthyPercent=0" \
                         --network-configuration "awsvpcConfiguration={subnets=[${SUBNET_JSON}],securityGroups=[\"${SG_ID}\"],assignPublicIp=ENABLED}"
                     fi
-
-                    echo "Waiting for service stability (may take a few minutes)..."
-                    aws ecs wait services-stable \
-                      --cluster "${ECS_CLUSTER}" \
-                      --services "${ECS_SERVICE}"
 
                     aws ecs describe-services \
                       --cluster "${ECS_CLUSTER}" \
                       --services "${ECS_SERVICE}" \
-                      --query 'services[0].{status:status,running:runningCount,desired:desiredCount,taskDefinition:taskDefinition}' \
+                      --query 'services[0].{status:status,running:runningCount,desired:desiredCount,taskDefinition:taskDefinition,rollout:deployments[0].rolloutState}' \
                       --output table
+
+                    if [ "${WAIT_FOR_STABLE}" = "true" ]; then
+                      echo "Waiting up to ${STABLE_WAIT_SECONDS}s for service stability..."
+                      # Bounded wait (aws ecs wait can take many minutes with no custom timeout)
+                      SECONDS_WAITED=0
+                      while [ "${SECONDS_WAITED}" -lt "${STABLE_WAIT_SECONDS}" ]; do
+                        PRIMARY=$(aws ecs describe-services \
+                          --cluster "${ECS_CLUSTER}" \
+                          --services "${ECS_SERVICE}" \
+                          --query 'services[0].deployments[?status==`PRIMARY`].rolloutState | [0]' \
+                          --output text 2>/dev/null || echo "UNKNOWN")
+                        RUNNING=$(aws ecs describe-services \
+                          --cluster "${ECS_CLUSTER}" \
+                          --services "${ECS_SERVICE}" \
+                          --query 'services[0].runningCount' \
+                          --output text 2>/dev/null || echo "0")
+                        echo "rollout=${PRIMARY} running=${RUNNING} waited=${SECONDS_WAITED}s"
+                        if [ "${PRIMARY}" = "COMPLETED" ] && [ "${RUNNING}" = "${DESIRED_COUNT}" ]; then
+                          echo "Service is stable."
+                          break
+                        fi
+                        sleep 5
+                        SECONDS_WAITED=$((SECONDS_WAITED + 5))
+                      done
+                      if [ "${SECONDS_WAITED}" -ge "${STABLE_WAIT_SECONDS}" ]; then
+                        echo "Timed out waiting for stability after ${STABLE_WAIT_SECONDS}s (deployment may still finish in AWS)."
+                      fi
+                    else
+                      echo "WAIT_FOR_STABLE=false — not waiting for Fargate tasks. Deployment continues in AWS."
+                    fi
                 '''
             }
         }
