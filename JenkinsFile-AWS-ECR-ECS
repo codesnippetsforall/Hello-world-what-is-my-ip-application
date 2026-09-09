@@ -69,8 +69,8 @@ pipeline {
                     env.AWS_ACCOUNT_ID = readFile('.aws_account_id').trim()
                     env.ECR_REGISTRY   = readFile('.ecr_registry').trim()
                     env.IMAGE_URI      = "${env.ECR_REGISTRY}/${env.ECR_REPO_NAME}:${env.IMAGE_TAG}"
+                    echo "ECR image URI: ${env.IMAGE_URI}"
                 }
-                echo "ECR image URI: ${IMAGE_URI}"
             }
         }
 
@@ -108,7 +108,7 @@ pipeline {
 
         stage('Push to ECR') {
             steps {
-                echo "Logging in and pushing to ECR: ${IMAGE_URI}"
+                echo "Logging in and pushing to ECR: ${env.IMAGE_URI}"
                 sh '''
                     set -e
                     aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
