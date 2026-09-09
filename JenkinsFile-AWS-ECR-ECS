@@ -16,16 +16,10 @@ pipeline {
         ECS_TASK_FAMILY    = 'whatismyip-task'
 
         // --- Jenkins Credentials (Secret text) — DO NOT hardcode keys ---
-        // Create these in Jenkins: Manage Jenkins → Credentials
         //   ID: aws-access-key-id     → IAM Access Key ID
         //   ID: aws-secret-access-key → IAM Secret Access Key
         AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
         AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
-
-        // Filled dynamically in "Resolve AWS identity"
-        AWS_ACCOUNT_ID     = ''
-        ECR_REGISTRY       = ''
-        IMAGE_URI          = ''
     }
 
     stages {
@@ -55,22 +49,21 @@ pipeline {
                     command -v aws >/dev/null
                     command -v docker >/dev/null
 
-                    # Keys come from Jenkins Credentials → env AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
                     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
                     CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
+                    ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+                    IMAGE_URI="${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
+
                     echo "AWS Account: ${ACCOUNT_ID}"
                     echo "Caller ARN:  ${CALLER_ARN}"
                     echo "AWS Region:  ${AWS_DEFAULT_REGION}"
+                    echo "ECR image URI: ${IMAGE_URI}"
 
-                    echo "${ACCOUNT_ID}" > .aws_account_id
-                    echo "${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com" > .ecr_registry
+                    # Persist for later stages (reliable across stages)
+                    echo "${ACCOUNT_ID}"   > .aws_account_id
+                    echo "${ECR_REGISTRY}" > .ecr_registry
+                    echo "${IMAGE_URI}"    > .image_uri
                 '''
-                script {
-                    env.AWS_ACCOUNT_ID = readFile('.aws_account_id').trim()
-                    env.ECR_REGISTRY   = readFile('.ecr_registry').trim()
-                    env.IMAGE_URI      = "${env.ECR_REGISTRY}/${env.ECR_REPO_NAME}:${env.IMAGE_TAG}"
-                    echo "ECR image URI: ${env.IMAGE_URI}"
-                }
             }
         }
 
@@ -97,6 +90,10 @@ pipeline {
                 echo 'Building Docker image...'
                 sh '''
                     set -e
+                    ECR_REGISTRY=$(cat .ecr_registry)
+                    IMAGE_URI=$(cat .image_uri)
+
+                    echo "Tagging as: ${IMAGE_URI}"
                     ls -la
                     docker build -t "${APP_NAME}:${IMAGE_TAG}" .
                     docker tag "${APP_NAME}:${IMAGE_TAG}" "${IMAGE_URI}"
@@ -108,9 +105,13 @@ pipeline {
 
         stage('Push to ECR') {
             steps {
-                echo "Logging in and pushing to ECR: ${env.IMAGE_URI}"
+                echo 'Logging in and pushing to ECR...'
                 sh '''
                     set -e
+                    ECR_REGISTRY=$(cat .ecr_registry)
+                    IMAGE_URI=$(cat .image_uri)
+
+                    echo "Pushing: ${IMAGE_URI}"
                     aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
                       | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
@@ -126,6 +127,8 @@ pipeline {
                 echo 'Registering new ECS task definition revision with ECR image...'
                 sh '''
                     set -e
+                    AWS_ACCOUNT_ID=$(cat .aws_account_id)
+                    IMAGE_URI=$(cat .image_uri)
 
                     EXISTING=$(aws ecs describe-task-definition \
                       --task-definition "${ECS_TASK_FAMILY}" \
@@ -195,6 +198,7 @@ PY
 
                     aws ecs register-task-definition --cli-input-json file://task-definition.json
                     echo "Registered task definition family: ${ECS_TASK_FAMILY}"
+                    echo "Image: ${IMAGE_URI}"
                 '''
             }
         }
@@ -253,6 +257,7 @@ PY
         success {
             sh '''
                 set +e
+                IMAGE_URI=$(cat .image_uri 2>/dev/null || echo "unknown")
                 echo "===== CI/CD SUCCESS (ECR + ECS) ====="
                 echo "Image:   ${IMAGE_URI}"
                 echo "Cluster: ${ECS_CLUSTER}"
@@ -286,7 +291,11 @@ PY
             echo 'Pipeline failed. Check Jenkins AWS credentials IDs, IAM permissions, ECR push, and ECS cluster/service.'
         }
         always {
-            sh 'docker logout "${ECR_REGISTRY}" >/dev/null 2>&1 || true'
+            sh '''
+                if [ -f .ecr_registry ]; then
+                  docker logout "$(cat .ecr_registry)" >/dev/null 2>&1 || true
+                fi
+            '''
         }
     }
 }
