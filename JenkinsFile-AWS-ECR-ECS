@@ -1,0 +1,282 @@
+pipeline {
+    agent any
+
+    environment {
+        // --- App / image ---
+        APP_NAME           = 'whatismyip'
+        IMAGE_TAG          = "v1-${BUILD_NUMBER}"
+        CONTAINER_NAME     = 'whatismyip'
+        CONTAINER_PORT     = '80'
+
+        // --- AWS (edit names/region to match your account; no secrets here) ---
+        AWS_DEFAULT_REGION = 'ap-south-1'
+        ECR_REPO_NAME      = 'whatismyip'
+        ECS_CLUSTER        = 'whatismyip-cluster'
+        ECS_SERVICE        = 'whatismyip-service'
+        ECS_TASK_FAMILY    = 'whatismyip-task'
+
+        // Filled dynamically in "Resolve AWS identity"
+        AWS_ACCOUNT_ID     = '656559337356'
+        ECR_REGISTRY       = '656559337356.dkr.ecr.ap-south-1.amazonaws.com'
+        IMAGE_URI          = '656559337356.dkr.ecr.ap-south-1.amazonaws.com/whatismyip:v1-${BUILD_NUMBER}'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/codesnippetsforall/Hello-world-what-is-my-ip-application.git'
+            }
+        }
+
+        stage('Code-Check') {
+            steps {
+                echo 'Checking required files...'
+                sh '''
+                    test -f Dockerfile
+                    test -f index.html
+                    echo "Dockerfile and index.html are present"
+                '''
+            }
+        }
+
+        stage('Resolve AWS identity') {
+            steps {
+                echo 'Resolving AWS account and ECR registry (dynamic, not hardcoded)...'
+                sh '''
+                    set -e
+                    command -v aws >/dev/null
+                    command -v docker >/dev/null
+
+                    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+                    echo "AWS Account: ${ACCOUNT_ID}"
+                    echo "AWS Region:  ${AWS_DEFAULT_REGION}"
+
+                    echo "${ACCOUNT_ID}" > .aws_account_id
+                    echo "${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com" > .ecr_registry
+                '''
+                script {
+                    env.AWS_ACCOUNT_ID = readFile('.aws_account_id').trim()
+                    env.ECR_REGISTRY   = readFile('.ecr_registry').trim()
+                    env.IMAGE_URI      = "${env.ECR_REGISTRY}/${env.ECR_REPO_NAME}:${env.IMAGE_TAG}"
+                }
+                echo "ECR image URI: ${IMAGE_URI}"
+            }
+        }
+
+        stage('Ensure ECR repository') {
+            steps {
+                echo "Ensuring ECR repository '${ECR_REPO_NAME}' exists..."
+                sh '''
+                    set -e
+                    if ! aws ecr describe-repositories --repository-names "${ECR_REPO_NAME}" >/dev/null 2>&1; then
+                      aws ecr create-repository \
+                        --repository-name "${ECR_REPO_NAME}" \
+                        --image-scanning-configuration scanOnPush=true \
+                        --encryption-configuration encryptionType=AES256
+                      echo "Created ECR repository: ${ECR_REPO_NAME}"
+                    else
+                      echo "ECR repository already exists: ${ECR_REPO_NAME}"
+                    fi
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo 'Building Docker image...'
+                sh '''
+                    set -e
+                    ls -la
+                    docker build -t "${APP_NAME}:${IMAGE_TAG}" .
+                    docker tag "${APP_NAME}:${IMAGE_TAG}" "${IMAGE_URI}"
+                    docker tag "${APP_NAME}:${IMAGE_TAG}" "${ECR_REGISTRY}/${ECR_REPO_NAME}:latest"
+                    docker image inspect "${APP_NAME}:${IMAGE_TAG}"
+                '''
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                echo "Logging in and pushing to ECR: ${IMAGE_URI}"
+                sh '''
+                    set -e
+                    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
+                      | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+                    docker push "${IMAGE_URI}"
+                    docker push "${ECR_REGISTRY}/${ECR_REPO_NAME}:latest"
+                    echo "Pushed: ${IMAGE_URI}"
+                '''
+            }
+        }
+
+        stage('Register ECS task definition') {
+            steps {
+                echo 'Registering new ECS task definition revision with ECR image...'
+                sh '''
+                    set -e
+
+                    EXISTING=$(aws ecs describe-task-definition \
+                      --task-definition "${ECS_TASK_FAMILY}" \
+                      --query 'taskDefinition' \
+                      --output json 2>/dev/null || true)
+
+                    if [ -n "${EXISTING}" ] && [ "${EXISTING}" != "null" ]; then
+                      EXEC_ROLE=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('executionRoleArn') or '')")
+                      TASK_ROLE=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('taskRoleArn') or '')")
+                      CPU=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cpu') or '256')")
+                      MEMORY=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('memory') or '512')")
+                      NETWORK_MODE=$(printf '%s' "${EXISTING}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('networkMode') or 'awsvpc')")
+                    else
+                      EXEC_ROLE="arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole"
+                      TASK_ROLE=""
+                      CPU="256"
+                      MEMORY="512"
+                      NETWORK_MODE="awsvpc"
+                    fi
+
+                    export ECS_TASK_FAMILY IMAGE_URI CONTAINER_NAME CONTAINER_PORT
+                    export EXEC_ROLE TASK_ROLE CPU MEMORY NETWORK_MODE AWS_DEFAULT_REGION
+
+                    python3 <<'PY'
+import json, os
+
+td = {
+    "family": os.environ["ECS_TASK_FAMILY"],
+    "networkMode": os.environ["NETWORK_MODE"],
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": os.environ["CPU"],
+    "memory": os.environ["MEMORY"],
+    "executionRoleArn": os.environ["EXEC_ROLE"],
+    "containerDefinitions": [
+        {
+            "name": os.environ["CONTAINER_NAME"],
+            "image": os.environ["IMAGE_URI"],
+            "essential": True,
+            "portMappings": [
+                {
+                    "containerPort": int(os.environ["CONTAINER_PORT"]),
+                    "protocol": "tcp",
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": f"/ecs/{os.environ['ECS_TASK_FAMILY']}",
+                    "awslogs-region": os.environ["AWS_DEFAULT_REGION"],
+                    "awslogs-stream-prefix": "ecs",
+                    "awslogs-create-group": "true",
+                },
+            },
+        }
+    ],
+}
+
+task_role = os.environ.get("TASK_ROLE", "").strip()
+if task_role:
+    td["taskRoleArn"] = task_role
+
+with open("task-definition.json", "w") as f:
+    json.dump(td, f, indent=2)
+
+print("Wrote task-definition.json")
+PY
+
+                    aws ecs register-task-definition --cli-input-json file://task-definition.json
+                    echo "Registered task definition family: ${ECS_TASK_FAMILY}"
+                '''
+            }
+        }
+
+        stage('Deploy to ECS') {
+            steps {
+                echo "Updating ECS service ${ECS_SERVICE} on cluster ${ECS_CLUSTER}..."
+                sh '''
+                    set -e
+
+                    CLUSTER_STATUS=$(aws ecs describe-clusters \
+                      --clusters "${ECS_CLUSTER}" \
+                      --query 'clusters[0].status' \
+                      --output text 2>/dev/null || echo "MISSING")
+
+                    if [ "${CLUSTER_STATUS}" != "ACTIVE" ]; then
+                      echo "ECS cluster '${ECS_CLUSTER}' is not ACTIVE (status=${CLUSTER_STATUS})."
+                      echo "Create the Fargate cluster once in AWS Console, then re-run this job."
+                      exit 1
+                    fi
+
+                    SERVICE_STATUS=$(aws ecs describe-services \
+                      --cluster "${ECS_CLUSTER}" \
+                      --services "${ECS_SERVICE}" \
+                      --query 'services[0].status' \
+                      --output text 2>/dev/null || echo "MISSING")
+
+                    if [ "${SERVICE_STATUS}" != "ACTIVE" ]; then
+                      echo "ECS service '${ECS_SERVICE}' is not ACTIVE (status=${SERVICE_STATUS})."
+                      echo "Create the service once (subnets, security group, optional ALB), then re-run."
+                      exit 1
+                    fi
+
+                    aws ecs update-service \
+                      --cluster "${ECS_CLUSTER}" \
+                      --service "${ECS_SERVICE}" \
+                      --task-definition "${ECS_TASK_FAMILY}" \
+                      --force-new-deployment
+
+                    echo "Waiting for service stability..."
+                    aws ecs wait services-stable \
+                      --cluster "${ECS_CLUSTER}" \
+                      --services "${ECS_SERVICE}"
+
+                    aws ecs describe-services \
+                      --cluster "${ECS_CLUSTER}" \
+                      --services "${ECS_SERVICE}" \
+                      --query 'services[0].{status:status,running:runningCount,desired:desiredCount,taskDefinition:taskDefinition}' \
+                      --output table
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            sh '''
+                set +e
+                echo "===== CI/CD SUCCESS (ECR + ECS) ====="
+                echo "Image:   ${IMAGE_URI}"
+                echo "Cluster: ${ECS_CLUSTER}"
+                echo "Service: ${ECS_SERVICE}"
+
+                TG_ARN=$(aws ecs describe-services \
+                  --cluster "${ECS_CLUSTER}" \
+                  --services "${ECS_SERVICE}" \
+                  --query 'services[0].loadBalancers[0].targetGroupArn' \
+                  --output text 2>/dev/null)
+
+                if [ -n "${TG_ARN}" ] && [ "${TG_ARN}" != "None" ]; then
+                  LB_ARN=$(aws elbv2 describe-target-groups \
+                    --target-group-arns "${TG_ARN}" \
+                    --query 'TargetGroups[0].LoadBalancerArns[0]' \
+                    --output text 2>/dev/null)
+                  DNS=$(aws elbv2 describe-load-balancers \
+                    --load-balancer-arns "${LB_ARN}" \
+                    --query 'LoadBalancers[0].DNSName' \
+                    --output text 2>/dev/null)
+                  if [ -n "${DNS}" ] && [ "${DNS}" != "None" ]; then
+                    echo "App URL: http://${DNS}/"
+                    exit 0
+                  fi
+                fi
+
+                echo "No ALB DNS found. Check ECS tasks (public IP) or attach an Application Load Balancer."
+            '''
+        }
+        failure {
+            echo 'Pipeline failed. Check AWS CLI/IAM permissions, ECR push, and that ECS cluster/service already exist.'
+        }
+        always {
+            sh 'docker logout "${ECR_REGISTRY}" >/dev/null 2>&1 || true'
+        }
+    }
+}
